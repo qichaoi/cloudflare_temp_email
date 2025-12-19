@@ -23,18 +23,25 @@ jobs:
         with:
           node-version: 20
 
-      - uses: pnpm/action-setup@v3
-        name: Install pnpm
-        id: pnpm-install
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 9
           run_install: false
 
-      - name: Deploy Backend for ${{ github.ref_name }}
+      - name: Deploy Backend
+        shell: bash
         run: |
-          export use_worker_assets=${{ secrets.USE_WORKER_ASSETS }}
-          export use_worker_assets_with_telegram=${{ secrets.USE_WORKER_ASSETS_WITH_TELEGRAM }}
-          if [ -n "$use_worker_assets" ]; then
+          # 设置变量
+          use_worker_assets="${{ secrets.USE_WORKER_ASSETS }}"
+          use_worker_assets_with_telegram="${{ secrets.USE_WORKER_ASSETS_WITH_TELEGRAM }}"
+          use_mail_wasm_parser="${{ secrets.BACKEND_USE_MAIL_WASM_PARSER }}"
+          
+          # 1. 如果开启了 Assets 编译前端
+          if [ -z "$use_worker_assets" ]; then
+            echo "Skipping frontend build as USE_WORKER_ASSETS is empty"
+          else
+            echo "Starting frontend build..."
             cd frontend/
             pnpm install --no-frozen-lockfile
             if [ -n "$use_worker_assets_with_telegram" ]; then
@@ -47,30 +54,29 @@ jobs:
             cd ..
           fi
 
-          export debug_mode=${{ secrets.DEBUG_MODE }}
-          export use_mail_wasm_parser=${{ secrets.BACKEND_USE_MAIL_WASM_PARSER }}
+          # 2. 准备后端环境
           cd worker/
-          echo '${{ secrets.BACKEND_TOML }}' > wrangler.toml
+          if [ -n "${{ secrets.BACKEND_TOML }}" ]; then
+            echo '${{ secrets.BACKEND_TOML }}' > wrangler.toml
+          else
+            echo "ERROR: BACKEND_TOML secret is missing!"
+            exit 1
+          fi
+          
           pnpm install --no-frozen-lockfile
 
+          # 3. 补丁处理
           if [ -n "$use_mail_wasm_parser" ]; then
-            echo "Using mail-parser-wasm-worker"
+            echo "Applying mail-parser-wasm-worker patch..."
             pnpm add mail-parser-wasm-worker
             git apply ../.github/config/mail-parser-wasm-worker.patch
-            echo "Applied mail-parser-wasm-worker patch"
           fi
 
-          if [ "$debug_mode" = "true" ]; then
-            pnpm run deploy
-          else
-            output=$(pnpm run deploy 2>&1)
-            if [ $? -ne 0 ]; then
-                code=$?
-                echo "Command failed with exit code $code"
-                exit $code
-            fi
-          fi
-          echo "Deployed for tag ${{ github.ref_name }}"
+          # 4. 执行部署 (直接运行，不隐藏报错信息)
+          echo "Starting deployment to Cloudflare..."
+          pnpm run deploy
+          
+          echo "Deployment successful for ${{ github.ref_name }}"
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
